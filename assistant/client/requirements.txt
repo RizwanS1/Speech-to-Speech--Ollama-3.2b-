@@ -1,0 +1,5 @@
+requests==2.31.0
+sounddevice==0.5.5
+opencv-python==4.9.0.80
+Pillow==10.4.0
+soundfile==0.12.1

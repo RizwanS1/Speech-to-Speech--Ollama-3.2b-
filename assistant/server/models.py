@@ -1,0 +1,23 @@
+from pydantic import BaseModel, Field
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
+class TTSRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+
+
+class STTResponse(BaseModel):
+    text: str
+
+
+class VisionResponse(BaseModel):
+    width: int
+    height: int
+    message: str

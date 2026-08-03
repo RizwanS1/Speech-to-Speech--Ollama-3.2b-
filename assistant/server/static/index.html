@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Voice Assistant Web UI</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f7fb; color: #222; margin: 0; padding: 0; }
+    .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+    h1 { margin-bottom: 12px; }
+    .status { margin-bottom: 16px; padding: 12px; background: #fff; border: 1px solid #d6dce8; border-radius: 8px; }
+    .buttons { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+    button { padding: 12px 18px; border: none; border-radius: 8px; background: #4f7cff; color: white; cursor: pointer; font-size: 15px; }
+    button:disabled { background: #9bb2ff; cursor: not-allowed; }
+    .log { background: #fff; border: 1px solid #d6dce8; border-radius: 8px; padding: 16px; min-height: 240px; overflow-y: auto; }
+    .entry { margin-bottom: 12px; }
+    .entry strong { display: block; margin-bottom: 4px; }
+    #ttsPlayer { width: 100%; margin-top: 16px; }
+    .note { margin-top: 8px; color: #5d6d80; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AI Voice Assistant</h1>
+    <div class="status" id="status">Status: idle</div>
+    <div class="buttons">
+      <button id="recordButton">Start Recording</button>
+      <button id="stopButton" disabled>Stop Recording</button>
+      <button id="fastForwardButton" disabled>Fast Forward</button>
+      <button id="pauseButton">Pause</button>
+    </div>
+    <div class="log" id="chatLog"></div>
+    <audio id="ttsPlayer" hidden></audio>
+    <div class="note">The page records from your microphone, sends speech to the server, gets a text reply, and plays the synthesized response.</div>
+  </div>
+  <script>
+    const baseUrl = window.location.origin;
+    const recordButton = document.getElementById('recordButton');
+    const stopButton = document.getElementById('stopButton');
+    const fastForwardButton = document.getElementById('fastForwardButton');
+    const pauseButton = document.getElementById('pauseButton');
+    const statusEl = document.getElementById('status');
+    const chatLog = document.getElementById('chatLog');
+    const ttsPlayer = document.getElementById('ttsPlayer');
+    const AUTO_RECORD_MS = 5000;
+
+    let audioStream = null;
+    let audioContext = null;
+    let scriptNode = null;
+    let rawAudioBuffer = [];
+    let inputSampleRate = 0;
+    let stopTimeout = null;
+    let isRecording = false;
+    let isPlayingResponse = false;
+    let isPaused = false;
+
+    function setStatus(message) {
+      statusEl.textContent = `Status: ${message}`;
+    }
+
+    function appendLog(role, text) {
+      const entry = document.createElement('div');
+      entry.className = 'entry';
+      entry.innerHTML = `<strong>${role}</strong><div>${text}</div>`;
+      chatLog.appendChild(entry);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    function setButtons() {
+      recordButton.disabled = isRecording || isPlayingResponse || isPaused;
+      stopButton.disabled = !isRecording;
+      fastForwardButton.disabled = !isPlayingResponse;
+      pauseButton.textContent = isPaused ? 'Resume' : 'Pause';
+    }
+
+    function maybeAutoRecord() {
+      if (!isPaused && !isRecording && !isPlayingResponse) {
+        startRecording();
+      }
+    }
+
+    recordButton.addEventListener('click', startRecording);
+    stopButton.addEventListener('click', stopRecording);
+    fastForwardButton.addEventListener('click', () => {
+      if (!isPlayingResponse) {
+        return;
+      }
+      ttsPlayer.onended = null;
+      if (!ttsPlayer.paused) {
+        ttsPlayer.currentTime = ttsPlayer.duration;
+        ttsPlayer.pause();
+      }
+      isPlayingResponse = false;
+      setButtons();
+      setStatus('Fast forwarded.');
+      maybeAutoRecord();
+    });
+    pauseButton.addEventListener('click', () => {
+      isPaused = !isPaused;
+      if (isPaused) {
+        if (isRecording) {
+          stopRecording();
+        }
+        if (isPlayingResponse && !ttsPlayer.paused) {
+          ttsPlayer.pause();
+        }
+        isPlayingResponse = false;
+        setStatus('Conversation paused.');
+      } else {
+        setStatus('Conversation resumed.');
+        maybeAutoRecord();
+      }
+      setButtons();
+    });
+
+    async function startRecording() {
+      if (isPaused || isRecording || isPlayingResponse) {
+        return;
+      }
+      await startMediaRecording();
+    }
+
+    async function startMediaRecording() {
+      try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        inputSampleRate = audioContext.sampleRate;
+        rawAudioBuffer = [];
+
+        const source = audioContext.createMediaStreamSource(audioStream);
+        scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+
+        scriptNode.onaudioprocess = (event) => {
+          const inputData = event.inputBuffer.getChannelData(0);
+          rawAudioBuffer.push(new Float32Array(inputData));
+        };
+
+        source.connect(scriptNode);
+        scriptNode.connect(audioContext.destination);
+
+        isRecording = true;
+        setButtons();
+        setStatus('Recording... speak now');
+
+        stopTimeout = setTimeout(() => {
+          stopRecording();
+          setStatus('Recording stopped automatically. Sending audio...');
+        }, AUTO_RECORD_MS);
+      } catch (error) {
+        console.error(error);
+        appendLog('Error', 'Microphone access failed.');
+        setStatus('Unable to start microphone.');
+      }
+    }
+
+    function stopRecording() {
+      if (!isRecording) {
+        return;
+      }
+      if (stopTimeout) {
+        clearTimeout(stopTimeout);
+        stopTimeout = null;
+      }
+      if (scriptNode) {
+        scriptNode.disconnect();
+        scriptNode.onaudioprocess = null;
+        scriptNode = null;
+      }
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+      if (audioStream) {
+        audioStream.getTracks().forEach((track) => track.stop());
+        audioStream = null;
+      }
+      if (rawAudioBuffer.length > 0) {
+        const recordedBuffers = rawAudioBuffer;
+        rawAudioBuffer = [];
+        isRecording = false;
+        setButtons();
+        setStatus('Sending audio for transcription...');
+        processRawAudio(recordedBuffers);
+      } else {
+        isRecording = false;
+        setButtons();
+        setStatus('Idle');
+      }
+    }
+
+    async function processRawAudio(buffers) {
+      try {
+        const wavBlob = createWavBlob(buffers, inputSampleRate);
+        const formData = new FormData();
+        formData.append('file', wavBlob, 'voice.wav');
+
+        const sttResponse = await fetch(`${baseUrl}/speech/stt`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!sttResponse.ok) {
+          const errorText = await sttResponse.text();
+          throw new Error(`STT request failed: ${sttResponse.status} ${errorText}`);
+        }
+
+        const sttData = await sttResponse.json();
+        const transcript = sttData.text || '';
+
+        if (!transcript.trim()) {
+          appendLog('Assistant', 'No speech detected. Please try again.');
+          isPlayingResponse = false;
+          setStatus('Idle');
+          setButtons();
+          return;
+        }
+
+        appendLog('User', transcript);
+        setStatus('Requesting chat response...');
+        await processTranscript(transcript);
+      } catch (error) {
+        console.error(error);
+        appendLog('Error', `Audio processing failed: ${error.message}`);
+        isPlayingResponse = false;
+        isRecording = false;
+        setStatus('Error occurred');
+        setButtons();
+      }
+    }
+
+    async function processTranscript(transcript) {
+      try {
+        const chatResponse = await fetch(`${baseUrl}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: transcript }),
+        });
+
+        if (!chatResponse.ok) {
+          const errorText = await chatResponse.text();
+          throw new Error(`Chat request failed: ${chatResponse.status} ${errorText}`);
+        }
+
+        const chatData = await chatResponse.json();
+        const replyText = chatData.reply || 'Sorry, I could not generate a response.';
+
+        appendLog('Bot', replyText);
+        setStatus('Synthesizing response...');
+
+        const ttsResponse = await fetch(`${baseUrl}/speech/tts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: replyText }),
+        });
+
+        if (!ttsResponse.ok) {
+          const errorText = await ttsResponse.text();
+          throw new Error(`TTS request failed: ${ttsResponse.status} ${errorText}`);
+        }
+
+        const ttsBlob = await ttsResponse.blob();
+        const audioUrl = URL.createObjectURL(ttsBlob);
+
+        ttsPlayer.src = audioUrl;
+        ttsPlayer.hidden = true;
+        isPlayingResponse = true;
+        setButtons();
+        await ttsPlayer.play();
+        setStatus('Playing response...');
+
+        ttsPlayer.onended = () => {
+          isPlayingResponse = false;
+          setButtons();
+          setStatus('Idle');
+          maybeAutoRecord();
+        };
+      } catch (error) {
+        console.error(error);
+        appendLog('Error', `Chat/TTS failed: ${error.message}`);
+        isPlayingResponse = false;
+        isRecording = false;
+        setStatus('Error occurred');
+        setButtons();
+      }
+    }
+
+    function createWavBlob(buffers, sampleRate) {
+      const merged = mergeBuffers(buffers);
+      const targetSampleRate = 16000;
+      const samples = sampleRate === targetSampleRate ? merged : downsampleBuffer(merged, sampleRate, targetSampleRate);
+      const wavBuffer = encodeWAV(samples, targetSampleRate);
+      return new Blob([wavBuffer], { type: 'audio/wav' });
+    }
+
+    function downsampleBuffer(buffer, inputRate, outputRate) {
+      if (outputRate >= inputRate) {
+        return buffer;
+      }
+      const sampleRateRatio = inputRate / outputRate;
+      const newLength = Math.round(buffer.length / sampleRateRatio);
+      const result = new Float32Array(newLength);
+      let offsetResult = 0;
+      let offsetBuffer = 0;
+      while (offsetResult < newLength) {
+        const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+        let accum = 0;
+        let count = 0;
+        for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+          accum += buffer[i];
+          count += 1;
+        }
+        result[offsetResult] = count > 0 ? accum / count : 0;
+        offsetResult += 1;
+        offsetBuffer = nextOffsetBuffer;
+      }
+      return result;
+    }
+
+    function mergeBuffers(buffers) {
+      let length = 0;
+      for (let i = 0; i < buffers.length; i++) {
+        length += buffers[i].length;
+      }
+      const result = new Float32Array(length);
+      let offset = 0;
+      for (let i = 0; i < buffers.length; i++) {
+        result.set(buffers[i], offset);
+        offset += buffers[i].length;
+      }
+      return result;
+    }
+
+    function encodeWAV(samples, sampleRate) {
+      const buffer = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(buffer);
+
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, 36 + samples.length * 2, true);
+      writeString(view, 8, 'WAVE');
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeString(view, 36, 'data');
+      view.setUint32(40, samples.length * 2, true);
+
+      floatTo16BitPCM(view, 44, samples);
+      return view;
+    }
+
+    function floatTo16BitPCM(output, offset, input) {
+      for (let i = 0; i < input.length; i++, offset += 2) {
+        let s = Math.max(-1, Math.min(1, input[i]));
+        output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+    }
+
+    function writeString(view, offset, string) {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    }
+  </script>
+</body>
+</html>
