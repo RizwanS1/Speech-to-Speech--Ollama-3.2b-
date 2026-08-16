@@ -1,0 +1,15 @@
+HTTP/1.1 301 Moved Permanently
+Server: nginx/1.30.4
+Date: Sun, 16 Aug 2026 16:07:16 GMT
+Content-Type: text/html
+Content-Length: 169
+Location: http://127.0.0.1/chat/
+Connection: keep-alive
+
+<html>
+<head><title>301 Moved Permanently</title></head>
+<body>
+<center><h1>301 Moved Permanently</h1></center>
+<hr><center>nginx/1.30.4</center>
+</body>
+</html>

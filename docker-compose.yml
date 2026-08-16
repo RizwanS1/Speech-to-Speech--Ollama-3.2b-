@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: assistant/frontend/Dockerfile
+    image: sts-frontend:latest
+    ports:
+      # Host:Container -> change host port if it conflicts with a local static server
+      - "8081:80"
+    environment:
+      # Set this to the public tunnel URL that forwards to your laptop backend (including scheme)
+      - FRONTEND_API_URL=
+    restart: unless-stopped

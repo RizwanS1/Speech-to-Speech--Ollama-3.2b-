@@ -33,8 +33,13 @@
     <audio id="ttsPlayer" hidden></audio>
     <div class="note">The page records from your microphone, sends speech to the server, gets a text reply, and plays the synthesized response.</div>
   </div>
+  <script src="/config.js"></script>
   <script>
-    const baseUrl = window.location.origin;
+    // If FRONTEND_API_URL is provided at runtime, use it. Otherwise default to empty
+    // so the UI uses same-origin paths (works with the nginx proxy in the Docker frontend).
+    const baseUrl = (window.FRONTEND_API_URL && window.FRONTEND_API_URL.length)
+      ? window.FRONTEND_API_URL
+      : '';
     const recordButton = document.getElementById('recordButton');
     const stopButton = document.getElementById('stopButton');
     const fastForwardButton = document.getElementById('fastForwardButton');
@@ -230,7 +235,7 @@
 
     async function processTranscript(transcript) {
       try {
-        const chatResponse = await fetch(`${baseUrl}/chat`, {
+        const chatResponse = await fetch(`${baseUrl}/chat/`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: transcript }),
