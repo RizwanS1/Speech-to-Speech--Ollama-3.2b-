@@ -1,14 +1,42 @@
 import os
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from redis.asyncio import Redis
+
+from assistant.server.auth import router as auth_router
+from assistant.server.config import get_settings
+from assistant.server.db import close_database, configure_database, initialize_database
 from assistant.server.chat import router as chat_router
+from assistant.server.history import router as history_router
 from assistant.server.speech import router as speech_router
 from assistant.server.vision import router as vision_router
 
-app = FastAPI(title="AI Voice Assistant Server")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    engine = configure_database()
+    redis_client: Redis = Redis.from_url(
+        settings.redis_url,
+        encoding="utf-8",
+        decode_responses=True,
+    )
+    app.state.redis = redis_client
+    try:
+        await initialize_database(engine)
+        await redis_client.ping()
+        yield
+    finally:
+        await redis_client.aclose()
+        await close_database()
+
+
+app = FastAPI(title="AI Voice Assistant Server", lifespan=lifespan)
 
 # Configure CORS origins. For local development include the common frontend host/ports.
 default_origins = [
@@ -50,6 +78,8 @@ async def add_cors_header(request, call_next):
 app.include_router(chat_router, prefix="/chat", tags=["chat"])
 app.include_router(speech_router, prefix="/speech", tags=["speech"])
 app.include_router(vision_router, prefix="/vision", tags=["vision"])
+app.include_router(auth_router)
+app.include_router(history_router)
 
 static_path = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=static_path), name="static")

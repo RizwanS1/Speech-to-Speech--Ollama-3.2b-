@@ -1,5 +1,25 @@
-version: '3.8'
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: speech
+      POSTGRES_USER: speech
+      POSTGRES_PASSWORD: speech
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U speech -d speech"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    restart: unless-stopped
   frontend:
     build:
       context: .
@@ -10,5 +30,8 @@ services:
       - "8081:80"
     environment:
       # Set this to the public tunnel URL that forwards to your laptop backend (including scheme)
-      - FRONTEND_API_URL=
+      - FRONTEND_API_URL=https://annex-squash-dragging.ngrok-free.dev
     restart: unless-stopped
+
+volumes:
+  postgres_data:

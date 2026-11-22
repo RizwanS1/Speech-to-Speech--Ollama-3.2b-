@@ -15,6 +15,9 @@
     .log { background: #fff; border: 1px solid #d6dce8; border-radius: 8px; padding: 16px; min-height: 240px; overflow-y: auto; }
     .entry { margin-bottom: 12px; }
     .entry strong { display: block; margin-bottom: 4px; }
+    .metrics { background: #fff; border: 1px solid #d6dce8; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .metrics h2 { margin: 0 0 8px; font-size: 18px; }
+    .metrics p { margin: 4px 0; }
     #ttsPlayer { width: 100%; margin-top: 16px; }
     .note { margin-top: 8px; color: #5d6d80; }
   </style>
@@ -29,6 +32,17 @@
       <button id="fastForwardButton" disabled>Fast Forward</button>
       <button id="pauseButton">Pause</button>
     </div>
+    <div class="buttons">
+      <label>Username <input id="username" autocomplete="username" minlength="3" maxlength="64" /></label>
+      <label>Password <input id="password" type="password" autocomplete="current-password" /></label>
+      <button id="registerButton">Register</button>
+      <button id="loginButton">Log in</button>
+    </div>
+    <section class="metrics" aria-live="polite">
+      <h2>Usage and latency</h2>
+      <p id="tokenCost">Estimated token cost: waiting for a request</p>
+      <p id="latencyDisplay">Latency: waiting for a request</p>
+    </section>
     <div class="log" id="chatLog"></div>
     <audio id="ttsPlayer" hidden></audio>
     <div class="note">The page records from your microphone, sends speech to the server, gets a text reply, and plays the synthesized response.</div>
@@ -47,7 +61,22 @@
     const statusEl = document.getElementById('status');
     const chatLog = document.getElementById('chatLog');
     const ttsPlayer = document.getElementById('ttsPlayer');
+    const usernameInput = document.getElementById('username');
+    const passwordInput = document.getElementById('password');
+    const registerButton = document.getElementById('registerButton');
+    const loginButton = document.getElementById('loginButton');
+    const tokenCostEl = document.getElementById('tokenCost');
+    const latencyDisplayEl = document.getElementById('latencyDisplay');
     const AUTO_RECORD_MS = 5000;
+    const SESSION_STORAGE_KEY = 'speechToSpeech.sessionId';
+    const createSessionId = () => window.crypto && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let sessionId = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (!sessionId) {
+      sessionId = createSessionId();
+      sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+    }
 
     let audioStream = null;
     let audioContext = null;
@@ -58,6 +87,7 @@
     let isRecording = false;
     let isPlayingResponse = false;
     let isPaused = false;
+    let accessToken = localStorage.getItem('speechToSpeech.accessToken');
 
     function setStatus(message) {
       statusEl.textContent = `Status: ${message}`;
@@ -66,26 +96,32 @@
     function appendLog(role, text) {
       const entry = document.createElement('div');
       entry.className = 'entry';
-      entry.innerHTML = `<strong>${role}</strong><div>${text}</div>`;
+      const heading = document.createElement('strong');
+      heading.textContent = role;
+      const message = document.createElement('div');
+      message.textContent = text;
+      entry.append(heading, message);
       chatLog.appendChild(entry);
       chatLog.scrollTop = chatLog.scrollHeight;
     }
 
     function setButtons() {
-      recordButton.disabled = isRecording || isPlayingResponse || isPaused;
+      recordButton.disabled = !accessToken || isRecording || isPlayingResponse || isPaused;
       stopButton.disabled = !isRecording;
       fastForwardButton.disabled = !isPlayingResponse;
       pauseButton.textContent = isPaused ? 'Resume' : 'Pause';
     }
 
     function maybeAutoRecord() {
-      if (!isPaused && !isRecording && !isPlayingResponse) {
+      if (accessToken && !isPaused && !isRecording && !isPlayingResponse) {
         startRecording();
       }
     }
 
     recordButton.addEventListener('click', startRecording);
     stopButton.addEventListener('click', stopRecording);
+    loginButton.addEventListener('click', login);
+    registerButton.addEventListener('click', register);
     fastForwardButton.addEventListener('click', () => {
       if (!isPlayingResponse) {
         return;
@@ -118,8 +154,53 @@
       setButtons();
     });
 
+    async function login() {
+      try {
+        const formData = new URLSearchParams({
+          username: usernameInput.value,
+          password: passwordInput.value,
+        });
+        const response = await fetch(`${baseUrl}/auth/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: formData,
+        });
+        if (!response.ok) {
+          throw new Error(`Login failed: ${response.status} ${await response.text()}`);
+        }
+        const data = await response.json();
+        accessToken = data.access_token;
+        localStorage.setItem('speechToSpeech.accessToken', accessToken);
+        setStatus('Logged in. Ready to record.');
+        setButtons();
+      } catch (error) {
+        console.error(error);
+        setStatus(error.message);
+      }
+    }
+
+    async function register() {
+      try {
+        const response = await fetch(`${baseUrl}/auth/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: usernameInput.value,
+            password: passwordInput.value,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(`Registration failed: ${response.status} ${await response.text()}`);
+        }
+        await login();
+      } catch (error) {
+        console.error(error);
+        setStatus(error.message);
+      }
+    }
+
     async function startRecording() {
-      if (isPaused || isRecording || isPlayingResponse) {
+      if (!accessToken || isPaused || isRecording || isPlayingResponse) {
         return;
       }
       await startMediaRecording();
@@ -194,26 +275,38 @@
     }
 
     async function processRawAudio(buffers) {
+      const turnStartedAt = performance.now();
+      tokenCostEl.textContent = 'Estimated token cost: calculating';
+      latencyDisplayEl.textContent = 'Latency: calculating';
       try {
         const wavBlob = createWavBlob(buffers, inputSampleRate);
         const formData = new FormData();
         formData.append('file', wavBlob, 'voice.wav');
+        formData.append('session_id', sessionId);
 
-        const sttResponse = await fetch(`${baseUrl}/speech/stt`, {
+        const apiStartedAt = performance.now();
+        const speechResponse = await fetch(`${baseUrl}/speech/speech-to-speech`, {
           method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}` },
           body: formData,
         });
 
-        if (!sttResponse.ok) {
-          const errorText = await sttResponse.text();
-          throw new Error(`STT request failed: ${sttResponse.status} ${errorText}`);
+        if (!speechResponse.ok) {
+          const errorText = await speechResponse.text();
+          throw new Error(`Speech request failed: ${speechResponse.status} ${errorText}`);
         }
 
-        const sttData = await sttResponse.json();
-        const transcript = sttData.text || '';
+        const speechData = await speechResponse.json();
+        const apiLatencyMs = performance.now() - apiStartedAt;
+        const transcript = speechData.transcript || '';
 
         if (!transcript.trim()) {
           appendLog('Assistant', 'No speech detected. Please try again.');
+          tokenCostEl.textContent = 'Estimated token cost: $0.000000000000 USD (no model prompt)';
+          latencyDisplayEl.textContent =
+            `Latency: server ${Math.round(speechData.server_latency_ms)} ms; `
+            + `API round trip ${Math.round(apiLatencyMs)} ms; `
+            + `turn total ${Math.round(performance.now() - turnStartedAt)} ms`;
           isPlayingResponse = false;
           setStatus('Idle');
           setButtons();
@@ -221,37 +314,29 @@
         }
 
         appendLog('User', transcript);
-        setStatus('Requesting chat response...');
-        await processTranscript(transcript);
-      } catch (error) {
-        console.error(error);
-        appendLog('Error', `Audio processing failed: ${error.message}`);
-        isPlayingResponse = false;
-        isRecording = false;
-        setStatus('Error occurred');
-        setButtons();
-      }
-    }
-
-    async function processTranscript(transcript) {
-      try {
-        const chatResponse = await fetch(`${baseUrl}/chat/`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: transcript }),
-        });
-
-        if (!chatResponse.ok) {
-          const errorText = await chatResponse.text();
-          throw new Error(`Chat request failed: ${chatResponse.status} ${errorText}`);
+        const replyText = speechData.reply || '';
+        if (!replyText) {
+          throw new Error('The chat model returned an empty response.');
         }
 
-        const chatData = await chatResponse.json();
-        const replyText = chatData.reply || 'Sorry, I could not generate a response.';
-
         appendLog('Bot', replyText);
+        const promptTokens = speechData.prompt_tokens;
+        const completionTokens = speechData.completion_tokens;
+        const totalTokens = speechData.total_tokens;
+        const estimatedCost = speechData.estimated_cost_usd;
+        if (Number.isInteger(promptTokens) && Number.isInteger(completionTokens) && Number.isInteger(totalTokens)) {
+          appendLog('Ollama token usage', `${promptTokens} prompt + ${completionTokens} generated = ${totalTokens} total tokens`);
+        } else {
+          appendLog('Ollama token usage', 'Token counts were not provided by the model.');
+        }
+        if (Number.isFinite(estimatedCost)) {
+          tokenCostEl.textContent = `Estimated token cost: $${estimatedCost.toFixed(12)} USD for this prompt`;
+        } else {
+          tokenCostEl.textContent = 'Estimated token cost: unavailable';
+        }
         setStatus('Synthesizing response...');
 
+        const ttsStartedAt = performance.now();
         const ttsResponse = await fetch(`${baseUrl}/speech/tts`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -264,6 +349,18 @@
         }
 
         const ttsBlob = await ttsResponse.blob();
+        const ttsLatencyMs = performance.now() - ttsStartedAt;
+        const metric = (value) => Number.isFinite(value) ? `${Math.round(value)} ms` : 'unavailable';
+        const ollamaDetails = Number.isFinite(speechData.prompt_eval_latency_ms)
+          && Number.isFinite(speechData.generation_latency_ms)
+          ? ` (prompt ${metric(speechData.prompt_eval_latency_ms)}, generation ${metric(speechData.generation_latency_ms)})`
+          : '';
+        latencyDisplayEl.textContent =
+          `Latency: server ${metric(speechData.server_latency_ms)}; `
+          + `Ollama ${metric(speechData.ollama_latency_ms)}${ollamaDetails}; `
+          + `API round trip ${metric(apiLatencyMs)}; `
+          + `TTS ${metric(ttsLatencyMs)}; `
+          + `turn total ${metric(performance.now() - turnStartedAt)}`;
         const audioUrl = URL.createObjectURL(ttsBlob);
 
         ttsPlayer.src = audioUrl;
@@ -281,12 +378,19 @@
         };
       } catch (error) {
         console.error(error);
-        appendLog('Error', `Chat/TTS failed: ${error.message}`);
+        tokenCostEl.textContent = 'Estimated token cost: unavailable';
+        latencyDisplayEl.textContent = `Latency: request failed after ${Math.round(performance.now() - turnStartedAt)} ms`;
+        appendLog('Error', `Audio processing failed: ${error.message}`);
         isPlayingResponse = false;
         isRecording = false;
         setStatus('Error occurred');
         setButtons();
       }
+    }
+
+    setButtons();
+    if (!accessToken) {
+      setStatus('Register or log in before recording.');
     }
 
     function createWavBlob(buffers, sampleRate) {

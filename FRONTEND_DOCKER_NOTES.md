@@ -1,5 +1,25 @@
 How to run the frontend Docker image and connect to your local backend
 
+## Backend authentication and conversation history
+
+Create the local environment file and replace the example JWT secret with a random value of at least 32 bytes:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Start the PostgreSQL and Redis containers and run the FastAPI backend from the repository root:
+
+```powershell
+docker compose up -d postgres redis
+.\.venv\Scripts\python.exe -m pip install -r assistant\server\requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn assistant.server.main:app --host 127.0.0.1 --port 8000
+```
+
+The example Compose configuration publishes PostgreSQL on port `15432` and Redis on `16379`; the `.env.example` URLs match those ports. The browser UI requires registration or login before recording. Its combined speech request requires a bearer token and stores the transcript and reply for the current conversation session. Existing standalone STT, chat, and TTS routes remain available.
+
+The UI reports per-request Ollama token counts, estimated USD token cost, server/Ollama latency, browser API round-trip time, TTS time, and total turn time. Local Ollama defaults to zero token cost. To estimate provider pricing instead, set `PROMPT_COST_PER_MILLION_TOKENS_USD` and `COMPLETION_COST_PER_MILLION_TOKENS_USD` in `.env` to the applicable USD rates per one million tokens, then restart the backend. The estimate covers text-model tokens only, not hardware electricity, speech recognition, or text-to-speech costs.
+
 1. Build and run the frontend (serves the static UI on port 8081):
 
 ```bash
