@@ -29,8 +29,8 @@ services:
       # Host:Container -> change host port if it conflicts with a local static server
       - "8081:80"
     environment:
-      # Set this to the public tunnel URL that forwards to your laptop backend (including scheme)
-      - FRONTEND_API_URL=https://annex-squash-dragging.ngrok-free.dev
+      # Leave blank for the local Nginx proxy; override only when using a public tunnel.
+      FRONTEND_API_URL: ${FRONTEND_API_URL:-}
     restart: unless-stopped
 
 volumes:

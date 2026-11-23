@@ -2,6 +2,8 @@ import io
 import json
 import logging
 import os
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -34,6 +36,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 VOSK_MODEL_PATH = os.environ.get("VOSK_MODEL_PATH", "./models/vosk-model-small-en-us-0.15")
+ESPEAK_EXECUTABLE = shutil.which("espeak-ng") or shutil.which("espeak")
 vosk_model = None
 if os.path.isdir(VOSK_MODEL_PATH):
     try:
@@ -44,15 +47,15 @@ if os.path.isdir(VOSK_MODEL_PATH):
 else:
     logger.warning("Vosk model directory not found: %s. STT endpoint will be unavailable.", VOSK_MODEL_PATH)
 
-engine = pyttsx3.init()
+engine = pyttsx3.init() if ESPEAK_EXECUTABLE is None else None
 engine_lock = threading.Lock()
 
-# Optional audio tuning. Keep defaults if platform voices vary.
-try:
-    default_rate = engine.getProperty("rate")
-    engine.setProperty("rate", max(100, default_rate - 30))
-except Exception:
-    logger.warning("Unable to adjust pyttsx3 rate.")
+if engine is not None:
+    try:
+        default_rate = engine.getProperty("rate")
+        engine.setProperty("rate", max(100, default_rate - 30))
+    except Exception:
+        logger.warning("Unable to adjust pyttsx3 rate.")
 
 
 def _transcribe_wav(uploaded_file: UploadFile) -> str:
@@ -105,6 +108,30 @@ def _cleanup_file(path: str) -> None:
         os.remove(path)
     except OSError:
         logger.warning("Unable to remove temporary file %s", path)
+
+
+def _synthesize_wav(text: str, path: str) -> None:
+    if ESPEAK_EXECUTABLE is not None:
+        subprocess.run(
+            [ESPEAK_EXECUTABLE, "-w", path, "-s", "170", "--stdin"],
+            input=text,
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+    else:
+        if engine is None:
+            raise RuntimeError("No text-to-speech engine is available.")
+        with engine_lock:
+            engine.save_to_file(text, path)
+            engine.runAndWait()
+
+    if os.path.getsize(path) <= 44:
+        raise RuntimeError("Text-to-speech engine produced an empty WAV file.")
+    with wave.open(path, "rb") as wav_file:
+        if wav_file.getnframes() == 0:
+            raise RuntimeError("Text-to-speech engine produced an empty WAV file.")
 
 
 @router.post("/stt", response_model=STTResponse)
@@ -224,14 +251,12 @@ def text_to_speech(request: TTSRequest, background_tasks: BackgroundTasks) -> Fi
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
         temp_path = temp_file.name
 
-    with engine_lock:
-        try:
-            engine.save_to_file(request.text, temp_path)
-            engine.runAndWait()
-        except Exception as exc:
-            logger.exception("TTS generation failed.")
-            _cleanup_file(temp_path)
-            raise HTTPException(status_code=500, detail="Failed to generate speech audio.")
+    try:
+        _synthesize_wav(request.text, temp_path)
+    except (OSError, RuntimeError, subprocess.SubprocessError, wave.Error) as exc:
+        logger.exception("TTS generation failed.")
+        _cleanup_file(temp_path)
+        raise HTTPException(status_code=500, detail="Failed to generate speech audio.") from exc
 
     background_tasks.add_task(_cleanup_file, temp_path)
     return FileResponse(path=temp_path, media_type="audio/wav", filename="response.wav")

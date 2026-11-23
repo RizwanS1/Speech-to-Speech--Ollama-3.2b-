@@ -47,13 +47,17 @@
     <audio id="ttsPlayer" hidden></audio>
     <div class="note">The page records from your microphone, sends speech to the server, gets a text reply, and plays the synthesized response.</div>
   </div>
-  <script src="/config.js"></script>
+  <script src="./config.js"></script>
   <script>
-    // If FRONTEND_API_URL is provided at runtime, use it. Otherwise default to empty
-    // so the UI uses same-origin paths (works with the nginx proxy in the Docker frontend).
-    const baseUrl = (window.FRONTEND_API_URL && window.FRONTEND_API_URL.length)
-      ? window.FRONTEND_API_URL
-      : '';
+    const API_BASE_URL = (
+      window.API_BASE_URL
+      || window.FRONTEND_API_URL
+      || (window.location.port === '4566' ? 'http://127.0.0.1:8001' : window.location.origin)
+    ).replace(/\/+$/, '');
+    const TTS_API_BASE_URL = (
+      window.TTS_API_BASE_URL
+      || (window.location.port === '4566' ? 'http://127.0.0.1:8000' : API_BASE_URL)
+    ).replace(/\/+$/, '');
     const recordButton = document.getElementById('recordButton');
     const stopButton = document.getElementById('stopButton');
     const fastForwardButton = document.getElementById('fastForwardButton');
@@ -160,7 +164,7 @@
           username: usernameInput.value,
           password: passwordInput.value,
         });
-        const response = await fetch(`${baseUrl}/auth/token`, {
+        const response = await fetch(`${API_BASE_URL}/auth/token`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: formData,
@@ -181,7 +185,7 @@
 
     async function register() {
       try {
-        const response = await fetch(`${baseUrl}/auth/register`, {
+        const response = await fetch(`${API_BASE_URL}/auth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -276,6 +280,7 @@
 
     async function processRawAudio(buffers) {
       const turnStartedAt = performance.now();
+      const metric = (value) => Number.isFinite(value) ? `${Math.round(value)} ms` : 'unavailable';
       tokenCostEl.textContent = 'Estimated token cost: calculating';
       latencyDisplayEl.textContent = 'Latency: calculating';
       try {
@@ -285,7 +290,7 @@
         formData.append('session_id', sessionId);
 
         const apiStartedAt = performance.now();
-        const speechResponse = await fetch(`${baseUrl}/speech/speech-to-speech`, {
+        const speechResponse = await fetch(`${API_BASE_URL}/speech/speech-to-speech`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${accessToken}` },
           body: formData,
@@ -334,14 +339,32 @@
         } else {
           tokenCostEl.textContent = 'Estimated token cost: unavailable';
         }
+        const ollamaDetails = Number.isFinite(speechData.prompt_eval_latency_ms)
+          && Number.isFinite(speechData.generation_latency_ms)
+          ? ` (prompt ${metric(speechData.prompt_eval_latency_ms)}, generation ${metric(speechData.generation_latency_ms)})`
+          : '';
+        latencyDisplayEl.textContent =
+          `Latency: server ${metric(speechData.server_latency_ms)}; `
+          + `Ollama ${metric(speechData.ollama_latency_ms)}${ollamaDetails}; `
+          + `API round trip ${metric(apiLatencyMs)}; `
+          + `TTS pending; `
+          + `turn total ${metric(performance.now() - turnStartedAt)}`;
         setStatus('Synthesizing response...');
 
         const ttsStartedAt = performance.now();
-        const ttsResponse = await fetch(`${baseUrl}/speech/tts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: replyText }),
-        });
+        const ttsController = new AbortController();
+        const ttsTimeout = window.setTimeout(() => ttsController.abort(), 65000);
+        let ttsResponse;
+        try {
+          ttsResponse = await fetch(`${TTS_API_BASE_URL}/speech/tts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: replyText }),
+            signal: ttsController.signal,
+          });
+        } finally {
+          window.clearTimeout(ttsTimeout);
+        }
 
         if (!ttsResponse.ok) {
           const errorText = await ttsResponse.text();
@@ -350,11 +373,6 @@
 
         const ttsBlob = await ttsResponse.blob();
         const ttsLatencyMs = performance.now() - ttsStartedAt;
-        const metric = (value) => Number.isFinite(value) ? `${Math.round(value)} ms` : 'unavailable';
-        const ollamaDetails = Number.isFinite(speechData.prompt_eval_latency_ms)
-          && Number.isFinite(speechData.generation_latency_ms)
-          ? ` (prompt ${metric(speechData.prompt_eval_latency_ms)}, generation ${metric(speechData.generation_latency_ms)})`
-          : '';
         latencyDisplayEl.textContent =
           `Latency: server ${metric(speechData.server_latency_ms)}; `
           + `Ollama ${metric(speechData.ollama_latency_ms)}${ollamaDetails}; `

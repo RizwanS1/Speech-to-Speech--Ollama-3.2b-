@@ -69,3 +69,11 @@ credentials.json
 # Ignore local editor files
 *.swp
 *.swo
+
+# Terraform local state and downloaded providers
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+terraform/backend-proxy.conf

@@ -3,13 +3,14 @@ import logging
 from fastapi import APIRouter, HTTPException
 from langchain_ollama import OllamaLLM
 
+from assistant.server.config import get_ollama_model, get_ollama_url
 from assistant.server.models import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 try:
-    llm = OllamaLLM(model="llama3.2")
+    llm = OllamaLLM(model=get_ollama_model(), base_url=get_ollama_url())
 except Exception as exc:
     logger.exception("Failed to initialize Ollama LLM.")
     llm = None
