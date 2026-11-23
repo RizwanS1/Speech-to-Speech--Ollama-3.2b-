@@ -6,6 +6,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:4566",
+    "http://127.0.0.1:4566",
+    "http://localhost:8000",
+)
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -16,6 +22,33 @@ class Settings:
     access_token_expire_minutes: int
     prompt_cost_per_million_tokens_usd: float
     completion_cost_per_million_tokens_usd: float
+    cors_origins: list[str]
+    ollama_url: str
+
+
+def get_cors_origins() -> list[str]:
+    configured_origins = os.getenv("CORS_ORIGINS")
+    if configured_origins is None:
+        return list(DEFAULT_CORS_ORIGINS)
+
+    origins = [origin.strip() for origin in configured_origins.split(",") if origin.strip()]
+    if not origins:
+        raise RuntimeError("CORS_ORIGINS must contain at least one origin.")
+    return origins
+
+
+def get_ollama_url() -> str:
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").strip().rstrip("/")
+    if not ollama_url.startswith(("http://", "https://")):
+        raise RuntimeError("OLLAMA_URL must be an HTTP or HTTPS URL.")
+    return ollama_url
+
+
+def get_ollama_model() -> str:
+    model = os.getenv("OLLAMA_MODEL", "llama3.2").strip()
+    if not model:
+        raise RuntimeError("OLLAMA_MODEL must be set.")
+    return model
 
 
 def _read_nonnegative_rate(name: str) -> float:
@@ -31,8 +64,12 @@ def _read_nonnegative_rate(name: str) -> float:
 
 def get_settings() -> Settings:
     database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url.startswith("postgresql://"):
+        database_url = database_url.replace(
+            "postgresql://", "postgresql+asyncpg://", 1
+        )
     redis_url = os.getenv("REDIS_URL", "").strip()
-    jwt_secret = os.getenv("JWT_SECRET", "")
+    jwt_secret = os.getenv("JWT_SECRET") or os.getenv("JWT_SECRET_KEY", "")
     jwt_algorithm = os.getenv("JWT_ALGORITHM", "HS256").strip()
 
     if not database_url:
@@ -65,4 +102,6 @@ def get_settings() -> Settings:
         completion_cost_per_million_tokens_usd=_read_nonnegative_rate(
             "COMPLETION_COST_PER_MILLION_TOKENS_USD"
         ),
+        cors_origins=get_cors_origins(),
+        ollama_url=get_ollama_url(),
     )

@@ -56,12 +56,6 @@ class STTResponse(BaseModel):
     text: str
 
 
-class VisionResponse(BaseModel):
-    width: int
-    height: int
-    message: str
-
-
 class SpeechToSpeechResponse(BaseModel):
     session_id: str
     transcript: str
