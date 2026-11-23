@@ -56,7 +56,7 @@ sequenceDiagram
 
     User->>UI: Speak
     UI->>UI: Capture up to 5s; convert to mono 16 kHz WAV
-    UI->>Proxy: POST /speech/speech-to-speech<br/>JWT + WAV + session_id
+    UI->>Proxy: POST /speech/speech-to-speech (JWT, WAV, session_id)
     Proxy->>API: Forward to task IP:8000
     API->>Redis: Check IP/path rate limit
     API->>API: Vosk transcribes WAV in-process
